@@ -60,10 +60,7 @@ class CriticNetwork(object):
         m1     = Masking(mask_value=0)(d1)
         l1     = LSTM(units=HIDDEN2_UNITS, return_sequences=True)(m1)
 
-        # merged shape: (batch, time, 180+40+40) = (batch, time, 260)
         merged = concatenate([l1, emb_out, demo])
-
-        # ── FIX: match action dense output to merged size (260) ──
         a1     = TimeDistributed(Dense(260, activation="linear"))(action_input)
         h2     = Add()([merged, a1])
         output = TimeDistributed(Dense(1, activation="linear"))(h2)
