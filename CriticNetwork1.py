@@ -46,21 +46,29 @@ class CriticNetwork(object):
         action_input    = Input(shape=(self.time_stamp, self.action_dim),
                                 dtype="float32", name="action_input")
 
+        # ── lab dropout (float32 — OK) ─────────────────────────
         d1      = Dropout(0.1)(main_input_lab)
+
+        # ── demo pathway ───────────────────────────────────────
         demo    = Dense(HIDDEN1_UNITS, activation="relu")(main_input_demo)
         demo    = RepeatVector(self.time_stamp)(demo)
 
-        d2      = Dropout(0.1)(main_input_di)
+        # ── disease embedding (no dropout — int32 input) ───────
         e1      = Embedding(output_dim=HIDDEN1_UNITS, input_dim=2001,
-                            input_length=self.di_size, mask_zero=True)(d2)
+                            input_length=self.di_size,
+                            mask_zero=True)(main_input_di)
         emb_out = Lambda(avg)(e1)
         emb_out = RepeatVector(self.time_stamp)(emb_out)
         emb_out = TimeDistributed(Dense(HIDDEN1_UNITS, activation="relu"))(emb_out)
 
+        # ── LSTM ───────────────────────────────────────────────
         m1     = Masking(mask_value=0)(d1)
         l1     = LSTM(units=HIDDEN2_UNITS, return_sequences=True)(m1)
 
+        # merged shape: (batch, time, 180+40+40) = (batch, time, 260)
         merged = concatenate([l1, emb_out, demo])
+
+        # ── action pathway — must match merged size 260 ────────
         a1     = TimeDistributed(Dense(260, activation="linear"))(action_input)
         h2     = Add()([merged, a1])
         output = TimeDistributed(Dense(1, activation="linear"))(h2)
@@ -76,12 +84,22 @@ class CriticNetwork(object):
         actions_var = tf.Variable(tf.cast(actions, tf.float32), trainable=True)
         with tf.GradientTape() as tape:
             tape.watch(actions_var)
-            q = self.model([states, actions_var, disease, demos], training=False)
+            q = self.model(
+                [tf.cast(states,  tf.float32),
+                 actions_var,
+                 tf.cast(disease, tf.int32),
+                 tf.cast(demos,   tf.float32)],
+                training=False
+            )
         return tape.gradient(q, actions_var).numpy()
 
     def train_on_batch(self, states, disease, demos, actions, targets):
         return self.model.train_on_batch(
-            [states, actions, disease, demos], targets
+            [tf.cast(states,  tf.float32),
+             tf.cast(actions, tf.float32),
+             tf.cast(disease, tf.int32),
+             tf.cast(demos,   tf.float32)],
+            targets
         )
 
     def target_train(self):

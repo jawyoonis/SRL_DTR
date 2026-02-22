@@ -1,4 +1,4 @@
-# %%writefile /content/SRL_DTR/ActorNetwork.py
+# %%writefile /content/SRL_DTR/ActorNetwork1.py
 import numpy as np
 import tensorflow as tf
 import tf_keras
@@ -43,17 +43,22 @@ class ActorNetwork(object):
         main_input_di   = Input(shape=(self.di_size,),
                                 dtype="int32", name="di_input")
 
+        # ── lab dropout (float32 — OK) ─────────────────────────
         d1      = Dropout(0.1)(main_input_lab)
+
+        # ── demo pathway ───────────────────────────────────────
         demo    = Dense(HIDDEN1_UNITS, activation="relu")(main_input_demo)
         demo    = RepeatVector(self.time_stamp)(demo)
 
-        d2      = Dropout(0.1)(main_input_di)
+        # ── disease embedding (no dropout — int32 input) ───────
         e1      = Embedding(output_dim=HIDDEN1_UNITS, input_dim=2001,
-                            input_length=self.di_size, mask_zero=True)(d2)
+                            input_length=self.di_size,
+                            mask_zero=True)(main_input_di)
         emb_out = Lambda(avg)(e1)
         emb_out = RepeatVector(self.time_stamp)(emb_out)
         emb_out = TimeDistributed(Dense(HIDDEN1_UNITS, activation="relu"))(emb_out)
 
+        # ── LSTM ───────────────────────────────────────────────
         m1     = Masking(mask_value=0)(d1)
         l1     = LSTM(units=HIDDEN2_UNITS, return_sequences=True)(m1)
 
@@ -70,13 +75,18 @@ class ActorNetwork(object):
 
     def train(self, states, disease, demos, lable, action_grads):
         with tf.GradientTape() as tape:
-            predicted  = self.model([states, disease, demos], training=True)
-            sl_loss    = tf.reduce_mean(
+            predicted  = self.model(
+                [tf.cast(states,  tf.float32),
+                 tf.cast(disease, tf.int32),
+                 tf.cast(demos,   tf.float32)],
+                training=True
+            )
+            sl_loss = tf.reduce_mean(
                 tf_keras.losses.binary_crossentropy(
                     tf.cast(lable, tf.float32), predicted
                 )
             )
-            rl_loss    = -tf.reduce_mean(
+            rl_loss = -tf.reduce_mean(
                 tf.reduce_sum(
                     tf.cast(action_grads, tf.float32) * predicted, axis=-1
                 )
