@@ -1,281 +1,189 @@
-import numpy as np
+# %%writefile /content/SRL_DTR/srl_rnn.py
+import os
 import random
-import argparse
-from keras.models import model_from_json, Model
-from keras.models import Sequential
-from keras.layers.core import Dense, Dropout, Activation, Flatten
-from keras.optimizers import Adam
-from sklearn.metrics import roc_auc_score, \
-                label_ranking_average_precision_score, label_ranking_loss, jaccard_similarity_score
-
-import tensorflow as tf
-# from keras.engine.training import collect_trainable_weights
-import json
+import numpy as np
 import pandas as pd
-from ActorNetwork1 import ActorNetwork
+import tensorflow as tf
+from sklearn.metrics import jaccard_score
+from ActorNetwork  import ActorNetwork
 from CriticNetwork import CriticNetwork
-from OU import OU
-from keras import backend as K
-import copy
+from config_srl    import config
 
-df = pd.read_csv('/Users/Downloads/unreal-master/model/train_all_12_31_scale.csv')
-val_df = pd.read_csv('/Users/Downloads/unreal-master/model/val_all_12_31_scale.csv')
+tf.random.set_seed(config.seed)
+np.random.seed(config.seed)
+random.seed(config.seed)
 
-df_disease = pd.read_csv('/Users/PycharmProjects/mimic_dataprocess/for_ij/train_di_base.csv')
-val_df_di = pd.read_csv('/Users/PycharmProjects/mimic_dataprocess/for_ij/val_di_base.csv')
+CKPT_DIR = "/content/drive/MyDrive/CSE6250_final_project/checkpoints"
+os.makedirs(CKPT_DIR, exist_ok=True)
 
-df_sta = pd.read_csv('/Users/PycharmProjects/mimic_dataprocess/for_ij/train_stastic_12_23.csv')
-val_sta = pd.read_csv('/Users/PycharmProjects/mimic_dataprocess/for_ij/val_stastic_12_23.csv')
+df         = pd.read_csv(config.df_pkl)
+val_df     = pd.read_csv(config.val_df_pkl)
+df_disease = pd.read_csv(config.df_disease_pkl)
+val_df_di  = pd.read_csv(config.val_df_di_pkl)
+df_sta     = pd.read_csv(config.df_sta_pkl)
+val_sta    = pd.read_csv(config.val_sta_pkl)
 
-val_df_disease = val_df_di.drop_duplicates()
-val_df_disease=val_df_disease.drop('hadm_id',axis=1)
-val_df_disease =val_df_disease.values
-val_df_di = val_df_di.drop('hadm_id',axis=1)
-val_df_di=val_df_di.values
-val_sta = val_sta.values
+med_size = config.med_size
+di_size  = 39
 
-med_size = 180 #1000
-di_size = 39
-di = []
-for i in range(di_size):
-    di.append(str(i))
-ac = []
-for i in range(med_size):
-    ac.append('l'+str(i))
+di_cols   = [str(i) for i in range(di_size)]
+ac_cols   = ["l" + str(i) for i in range(med_size)]
+demo_cols = ["sofa", "GENDER", "RELIGION", "MARITAL_STATUS",
+             "age", "weight", "height", "language", "ethnicity"]
+lab_cols  = ["dbp", "fio2", "GCS", "blood_glucose", "sbp",
+             "hr", "PH", "rr", "bos", "temp", "urine_output"]
 
-demo = ['sofa','GENDER','RELIGION','MARITAL_STATUS','age','weight','height','language','ethnicity']
-lab_test = ['dbp','fio2','GCS','blood_glucose','sbp','hr','PH','rr','bos','temp','urine_output']
+val_df_di_arr = val_df_di.drop("hadm_id", axis=1).values
+val_sta_arr   = val_sta.drop("hadm_id", axis=1).values \
+                if "hadm_id" in val_sta.columns else val_sta.values
 
-df['prob'] = abs(df['flag'])
-unique_id =df['hadm_id'].drop_duplicates().values
-OU = OU()
+unique_id = df["hadm_id"].drop_duplicates().values
 
 class SRL_RNN:
-
-    def __init__(self,config):
+    def __init__(self, config):
         self.config = config
         np.random.seed(config.model_seed)
 
+    def batch(self, batch_size):
+        states, meds, rewards, next_states, done_flags = None, None, None, None, None
+        disease_list, demo_list = [], []
 
-    def batch(batch_size):
-
-        state_size = 12
-        states = None
-        meds = None
-        rewards = None
-        next_states = None
-        done_flags = None
-        disease = []
-        demos = []
-
-        for bat in range(batch_size):
-            traj_id = np.random.choice(unique_id)
-            a = df.loc[df['hadm_id'] == traj_id]
-            di = df_disease[di][df_disease['hadm_id'] == traj_id].values
-            demo = df_sta[demo][df_sta['hadm_id'] == traj_id].values
-            x = 0
+        for _ in range(batch_size):
+            traj_id   = np.random.choice(unique_id)
+            a         = df.loc[df["hadm_id"] == traj_id]
+            di_vals   = df_disease[di_cols][df_disease["hadm_id"] == traj_id].values
+            demo_vals = df_sta[demo_cols][df_sta["hadm_id"] == traj_id].values
+            x         = 0
 
             for i in a.index:
-                disease.append(di)
-                demos.append(demo)
-                x = x + 1
-                state = a.ix[i, lab_test]
-                state = np.reshape(state, [1, state_size])
-                med = a.ix[i, ac]
-                med = np.reshape(med, [1, med_size])
-                reward = a.ix[i, 'flag']
+                disease_list.append(di_vals)
+                demo_list.append(demo_vals)
+                x    += 1
+                state  = np.reshape(a.loc[i, lab_cols].values,  [1, config.state_dim])
+                med    = np.reshape(a.loc[i, ac_cols].values,   [1, med_size])
+                reward = a.loc[i, "flag"]
+
                 if x < len(a):
-                    med = med
-                    next_state = df.ix[i + 1, lab_test]
-                    reward = reward
-                    done = 0
-                    next_state = np.reshape(next_state, [1, state_size])
-                else:
-                    med = med
-                    next_state = np.zeros(state_size)
-                    reward = reward
-                    done = 1
-                    next_state = np.reshape(next_state, [1, state_size])
-
-                if states is None:
-                    states = copy.deepcopy(state)
-                else:
-                    states = np.vstack((states, state))
-                if meds is None:
-                    meds = copy.deepcopy(med)
-                else:
-                    meds = np.vstack((meds, med))
-                if rewards is None:
-                    rewards = [reward]
-                else:
-                    rewards = np.vstack((rewards, reward))
-                if next_states is None:
-                    next_states = copy.deepcopy(next_state)
-                else:
-                    next_states = np.vstack((next_states, next_state))
-                if done_flags is None:
-                    done_flags = [done]
-                else:
-                    done_flags = np.vstack((done_flags, done))
-
-        return (states, np.squeeze(meds), np.squeeze(rewards), next_states, np.squeeze(done_flags), np.squeeze(np.array(disease)), np.squeeze(np.array(demos)))
-
-
-    def process_batch(size,weight):
-
-        a = df.sample(n=size,weights=weight )
-        states = None
-        meds = None
-        rewards = None
-        next_states = None
-        done_flags = None
-
-        for i in a.index:
-            cur_state = a.ix[i, lab_test]
-            med = a.ix[i, ac].values
-            med = np.reshape(med, med_size)
-            reward = a.ix[i, 'flag']
-
-            if i != df.index[-1]:
-                # if not terminal step in trajectory
-                if df.ix[i, 'hadm_id'] == df.ix[i + 1, 'hadm_id']:
-                    next_state = df.ix[i + 1, lab_test]
+                    next_idx   = a.index[x]
+                    next_state = np.reshape(df.loc[next_idx, lab_cols].values,
+                                           [1, config.state_dim])
                     done = 0
                 else:
-                    next_state = np.zeros(len(cur_state))
+                    next_state = np.reshape(np.zeros(config.state_dim),
+                                           [1, config.state_dim])
                     done = 1
-            else:
-                next_state = np.zeros(len(cur_state))
-                done = 1
 
-            if states is None:
-                states = copy.deepcopy(cur_state)
-            else:
-                states = np.vstack((states, cur_state))
+                states      = state      if states      is None else np.vstack((states,      state))
+                meds        = med        if meds        is None else np.vstack((meds,        med))
+                rewards     = [reward]   if rewards     is None else np.vstack((rewards,     reward))
+                next_states = next_state if next_states is None else np.vstack((next_states, next_state))
+                done_flags  = [done]     if done_flags  is None else np.vstack((done_flags,  done))
 
-            if meds is None:
-                meds = [med]
-            else:
-                meds = np.vstack((meds, med))
-
-            if rewards is None:
-                rewards = [reward]
-            else:
-                rewards = np.vstack((rewards, reward))
-
-            if next_states is None:
-                next_states = copy.deepcopy(next_state)
-            else:
-                next_states = np.vstack((next_states, next_state))
-
-            if done_flags is None:
-                done_flags = [done]
-            else:
-                done_flags = np.vstack((done_flags, done))
-
-        return (states, np.squeeze(meds), np.squeeze(rewards), next_states, np.squeeze(done_flags))
-
+        return (states,
+                np.squeeze(meds),
+                np.squeeze(rewards),
+                next_states,
+                np.squeeze(done_flags),
+                np.squeeze(np.array(disease_list)),
+                np.squeeze(np.array(demo_list)))
 
     def DTR(self):
-        y_val = np.load('/Users/Downloads/unreal-master/model/y.npy')
-        x_val = np.load('/Users/Downloads/unreal-master/model/val_x_3_base.npy')
-        jac =[]
-        qv = []
+        cfg           = self.config
+        BATCH_SIZE    = cfg.batch_size
+        GAMMA         = cfg.gamma
+        TAU           = cfg.tau
+        LRA           = cfg.lra
+        LRC           = cfg.lrc
+        epsilon       = cfg.epsilon
+        tiem_stamp    = cfg.tiem_stamp
+        lab_size      = cfg.lab_size
+        demo_size     = cfg.demo_size
+        max_reward    = cfg.max_reward
+        action_dim    = cfg.med_size
+        state_dim     = cfg.state_dim
+        episode_count = cfg.episode_count
 
-        BATCH_SIZE = self.config.batch_size
-        GAMMA = self.config.gamma
-        TAU = self.config.tau
-        LRA = self.config.lra
-        LRC = self.config.lrc
-        epsilon = self.config.epsilon
-        tiem_stamp = self.config.tiem_stamp
-        lab_size = self.config.lab_size
-        demo_size = self.config.demo_size
-        max_reward = self.config.max_reward
-        action_dim = self.config.med_size
-        state_dim = self.config.state_dim
-        np.random.seed(self.config.seed)
-        episode_count = self.config.episode_count
-        config_p = tf.ConfigProto()
-        # config.gpu_options.allow_growth = True
-        sess = tf.Session(config=config_p)
-        K.set_session(sess)
-        print('builda')
+        actor  = ActorNetwork(None, state_dim, action_dim, BATCH_SIZE, TAU,
+                              LRA, epsilon, tiem_stamp, med_size,
+                              lab_size, demo_size, di_size)
+        critic = CriticNetwork(None, state_dim, action_dim, BATCH_SIZE, TAU,
+                               LRC, epsilon, tiem_stamp, med_size,
+                               lab_size, demo_size, di_size, action_dim)
 
-        actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA, epsilon, tiem_stamp, med_size, lab_size, demo_size, di_size)
-        print('buildc')
-        critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC, epsilon, tiem_stamp, med_size, lab_size, demo_size, di_size, action_dim)
-
-        print("Now we load the weight")
         try:
-            actor.model.load_weights("actormodel.h5")
-            critic.model.load_weights("criticmodel.h5")
-            actor.target_model.load_weights("actormodel.h5")
-            critic.target_model.load_weights("criticmodel.h5")
-            print("Weight load successfully")
+            actor.load(f"{CKPT_DIR}/actor_best.weights.h5")
+            critic.load(f"{CKPT_DIR}/critic_best.weights.h5")
+            print("✓ Weights loaded successfully")
         except:
-            print("Cannot find the weight")
+            print("No existing weights found, starting fresh")
+
+        jac, qv      = [], []
+        best_jaccard = 0.0
 
         for i in range(episode_count):
-                loss = 0
-                # weight = df['prob']
-                states, actions, rewards, new_states, dones, diseases, demos = self.batch(BATCH_SIZE)
-                # states, actions, rewards, new_states, dones = self.process_batch(BATCH_SIZE,weight)
-                len1 = states.shape[0]
-                y_t = np.zeros(len1)
-                ac = actor.target_model.predict([new_states, diseases, demos])
-                target_q_values = critic.target_model.predict([new_states, ac, diseases,demos])
-                target_q_values[target_q_values > max_reward] = max_reward
-                target_q_values[target_q_values < -max_reward] = -max_reward
+            states, actions, rewards, new_states, dones, diseases, demos = \
+                self.batch(BATCH_SIZE)
 
-                for k in range((len1)):
-                    if dones[k] == 1:
-                        y_t[k] = rewards[k]
-                    else:
-                        y_t[k] = rewards[k] + GAMMA * target_q_values[k]
+            ac_target = actor.target_model.predict(
+                [new_states, diseases, demos], verbose=0
+            )
+            target_q  = critic.target_model.predict(
+                [new_states, ac_target, diseases, demos], verbose=0
+            )
+            target_q  = np.clip(target_q, -max_reward, max_reward)
 
-                lable = actions.copy()
+            len1 = states.shape[0]
+            y_t  = np.array([
+                rewards[k] if dones[k] == 1
+                else rewards[k] + GAMMA * float(np.mean(target_q[k]))
+                for k in range(len1)
+            ])
 
-                loss += critic.model.train_on_batch([states, actions, diseases, demos], y_t)
-                a_for_grad = actor.model.predict([states, diseases, demos])
-                grads = critic.gradients(states, diseases, demos, a_for_grad)
-                actor.train(states, diseases, demos, lable, grads)
+            a_for_grad = actor.model.predict([states, diseases, demos], verbose=0)
+            critic.train_on_batch(states, diseases, demos, a_for_grad, y_t)
+            grads      = critic.gradients(states, diseases, demos, a_for_grad)
+            actor.train(states, diseases, demos, actions, grads)
 
+            actor.target_train()
+            critic.target_train()
 
-                actor.target_train()
-                critic.target_train()
+            if i % 10 == 0:
+                preds    = actor.model.predict(
+                    [val_df[lab_cols].values, val_df_di_arr, val_sta_arr], verbose=0
+                )
+                target_q = critic.target_model.predict(
+                    [val_df[lab_cols].values, preds, val_df_di_arr, val_sta_arr],
+                    verbose=0
+                )
+                q        = float(np.mean(target_q))
+                pred_bin = (preds >= 0.5).astype(int)
+                j        = jaccard_score(
+                    val_df[ac_cols].values.astype(int),
+                    pred_bin,
+                    average="samples",
+                    zero_division=0
+                )
+                print(f"Episode {i:6d} | Q: {q:.4f} | Jaccard: {j:.4f}")
 
-                if i % 10 == 0:
-                    print(val_df_di.shape,val_sta.shape)
-                    preds = actor.model.predict([val_df[lab_test].values, val_df_di, val_sta])
-                    target_q_values = critic.target_model.predict([val_df[lab_test].values, preds, val_df_di, val_sta])
-                    q = np.mean(target_q_values)
-                    print('target_q_values',q)
-                    # print("micro-auc", roc_auc_score(y_val[:,0], preds, average='micro'))
-                    preds[preds >= 0.5] = 1
-                    preds[preds < 0.5] = 0
-                    j = jaccard_similarity_score(y_val, preds)
-                    print('jaccard_similarity_score',j )
-                    if i % 100 == 0:
-                        np.save('ddpg_s_'+str(i)+'.npy', preds)
-                        jac.append(j)
-                        qv.append(q)
-                    if i % 1000 == 0:
-                        actor.model.save_weights("actormodel_s_"+str(i)+".h5", overwrite=True)
-                        with open("actormodel_s_"+str(i)+".json", "w") as outfile:
-                            json.dump(actor.model.to_json(), outfile)
-                        critic.model.save_weights("criticmodel_s_"+str(i)+".h5", overwrite=True)
-                        with open("criticmodel_s_"+str(i)+".json", "w") as outfile:
-                            json.dump(critic.model.to_json(), outfile)
-                        np.save('jac_s_'+str(i)+'.npy',np.array(jac))
-                        np.save('qv_s_' + str(i)+'.npy', np.array(qv))
+                if i % 100 == 0:
+                    jac.append(j)
+                    qv.append(q)
 
+                if j > best_jaccard:
+                    best_jaccard = j
+                    actor.save(f"{CKPT_DIR}/actor_best.weights.h5")
+                    critic.save(f"{CKPT_DIR}/critic_best.weights.h5")
+                    print(f"  ✓ Best model saved (Jaccard={best_jaccard:.4f})")
 
+                if i % 1000 == 0 and i > 0:
+                    actor.save(f"{CKPT_DIR}/actor_ep{i}.weights.h5")
+                    critic.save(f"{CKPT_DIR}/critic_ep{i}.weights.h5")
+                    np.save(f"{CKPT_DIR}/jac_{i}.npy", np.array(jac))
+                    np.save(f"{CKPT_DIR}/qv_{i}.npy",  np.array(qv))
+
+        print(f"\nTraining complete. Best Jaccard: {best_jaccard:.4f}")
 
 
 if __name__ == "__main__":
-    model = SRL_RNN()
+    model = SRL_RNN(config)
     model.DTR()
-
-
-
