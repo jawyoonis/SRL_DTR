@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import jaccard_score
-from ActorNetwork  import ActorNetwork
-from CriticNetwork import CriticNetwork
+from ActorNetwork1  import ActorNetwork
+from CriticNetwork1 import CriticNetwork
 from config_srl    import config
 
 tf.random.set_seed(config.seed)
