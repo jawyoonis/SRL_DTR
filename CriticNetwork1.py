@@ -1,4 +1,4 @@
-# %%writefile /content/SRL_DTR/CriticNetwork.py
+# %%writefile /content/SRL_DTR/CriticNetwork1.py
 import numpy as np
 import tensorflow as tf
 import tf_keras
@@ -60,8 +60,11 @@ class CriticNetwork(object):
         m1     = Masking(mask_value=0)(d1)
         l1     = LSTM(units=HIDDEN2_UNITS, return_sequences=True)(m1)
 
+        # merged shape: (batch, time, 180+40+40) = (batch, time, 260)
         merged = concatenate([l1, emb_out, demo])
-        a1     = TimeDistributed(Dense(HIDDEN2_UNITS, activation="linear"))(action_input)
+
+        # ── FIX: match action dense output to merged size (260) ──
+        a1     = TimeDistributed(Dense(260, activation="linear"))(action_input)
         h2     = Add()([merged, a1])
         output = TimeDistributed(Dense(1, activation="linear"))(h2)
 
