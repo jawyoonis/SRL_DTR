@@ -14,10 +14,10 @@ class config:
     lrc           = 0.005
     epsilon       = 0.5
     tiem_stamp    = 5
-    lab_size      = 12
-    demo_size     = 8
+    lab_size      = 11
+    demo_size     = 9
     max_reward    = 30
-    state_dim     = 12
+    state_dim     = 11
     med_size      = 180
     episode_count = 100000
     seed          = 1337
