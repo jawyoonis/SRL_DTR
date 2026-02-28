@@ -1,5 +1,5 @@
 
-# %%writefile /content/SRL_DTR/config_srl.py
+%%writefile /content/SRL_DTR/config_srl.py
 class config:
     df_pkl         = "/content/drive/MyDrive/CSE6250_final_project/processed/train_all_12_31_scale.csv"
     val_df_pkl     = "/content/drive/MyDrive/CSE6250_final_project/processed/val_all_12_31_scale.csv"
